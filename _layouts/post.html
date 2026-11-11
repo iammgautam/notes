@@ -1,0 +1,17 @@
+---
+layout: base
+---
+<div class="wrap n-page n-post-page">
+  <article class="n-article">
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="{{ '/blog/' | relative_url }}">Blog</a></nav>
+    <header class="n-head">
+      <p class="overline"><time datetime="{{ page.date | date_to_xmlschema }}">{{ page.date | date: '%B %-d, %Y' }}</time>{% if page.tags.size > 0 %} · {{ page.tags | join: ' · ' }}{% endif %}</p>
+      <h1 class="display n-title">{{ page.title }}</h1>
+      {% if page.summary %}<p class="lede">{{ page.summary }}</p>{% endif %}
+    </header>
+    <div class="prose">
+      {{ content }}
+    </div>
+    <p class="n-back"><a href="{{ '/blog/' | relative_url }}">← All posts</a></p>
+  </article>
+</div>

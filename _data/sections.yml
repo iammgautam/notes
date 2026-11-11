@@ -1,0 +1,42 @@
+# Order here = order on the home page.
+# group: core = interview fundamentals (short, direct); deep = engineering deep dives.
+- id: dsa
+  title: Data Structures & Algorithms
+  group: core
+  blurb: Patterns, templates and complexities. What to recognise and what to write.
+- id: lld
+  title: Low-Level Design
+  group: core
+  blurb: SOLID, design patterns and worked object-oriented designs.
+- id: hld
+  title: High-Level Design
+  group: core
+  blurb: A repeatable framework, building blocks and classic system designs.
+- id: postgresql
+  title: PostgreSQL & Databases
+  group: deep
+  blurb: Indexes, query plans, MVCC, locking and using Postgres as infrastructure.
+- id: python-django
+  title: Python & Django
+  group: deep
+  blurb: The language internals and ORM behaviour that matter in production.
+- id: llm
+  title: LLM, RAG & Agents
+  group: deep
+  blurb: Retrieval, tool calling, agents, and how models are served.
+- id: networking
+  title: Networking & APIs
+  group: deep
+  blurb: HTTP, API design, auth and the protocols under your backend.
+- id: os-concurrency
+  title: OS & Concurrency
+  group: deep
+  blurb: Processes, threads, async I/O and the races they cause.
+- id: production
+  title: Production Engineering
+  group: deep
+  blurb: Observability, debugging live systems, deploys and incidents.
+- id: behavioral
+  title: Behavioral Interviews
+  group: core
+  blurb: A story bank and how to tell it.

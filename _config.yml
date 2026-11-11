@@ -1,0 +1,31 @@
+title: Notes
+description: Working notes on DSA, system design, databases and LLM systems, plus a blog. By Mithilesh Gautam.
+author: Mithilesh Gautam
+url: https://iammgautam.github.io
+baseurl: /notes
+portfolio: https://iammgautam.github.io/
+
+markdown: kramdown
+highlighter: rouge
+kramdown:
+  input: GFM
+  hard_wrap: false
+  syntax_highlighter: rouge
+
+permalink: /blog/:title/
+
+exclude:
+  - README.md
+  - LICENSE
+  - STYLE.md
+  - Gemfile
+  - Gemfile.lock
+  - vendor
+
+defaults:
+  - scope: { path: "" }
+    values: { layout: note }
+  - scope: { path: "", type: posts }
+    values: { layout: post }
+  - scope: { path: "", type: drafts }
+    values: { layout: post }

@@ -1,0 +1,35 @@
+---
+layout: base
+---
+{% assign s = site.data.sections | where: "id", page.section | first %}
+{% assign notes = site.pages | where: "section", page.section | where_exp: "p", "p.layout == 'note'" | sort: "order" %}
+{% for n in notes %}{% if n.url == page.url %}{% assign i = forloop.index0 %}{% endif %}{% endfor %}
+{% assign prev_i = i | minus: 1 %}{% assign next_i = i | plus: 1 %}
+<div class="wrap n-page n-layout">
+  <aside class="n-side" aria-label="{{ s.title }} notes">
+    <details class="n-toc" open>
+      <summary><a href="{{ '/' | append: page.section | append: '/' | relative_url }}">{{ s.title }}</a></summary>
+      <ol>
+        {% for n in notes %}
+        <li><a href="{{ n.url | relative_url }}"{% if n.url == page.url %} aria-current="page"{% endif %}>{{ n.title }}</a></li>
+        {% endfor %}
+      </ol>
+    </details>
+  </aside>
+
+  <article class="n-article">
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="{{ '/' | relative_url }}">Notes</a> <span aria-hidden="true">/</span> <a href="{{ '/' | append: page.section | append: '/' | relative_url }}">{{ s.title }}</a></nav>
+    <header class="n-head">
+      <h1 class="n-note-title">{{ page.title }}</h1>
+      {% if page.summary %}<p class="lede">{{ page.summary }}</p>{% endif %}
+    </header>
+    <div class="prose">
+      {{ content }}
+    </div>
+
+    <nav class="n-pager" aria-label="Previous and next note">
+      {% if i > 0 %}{% assign p = notes[prev_i] %}<a class="n-pager-prev" href="{{ p.url | relative_url }}"><span class="overline">Previous</span><span>{{ p.title }}</span></a>{% else %}<span></span>{% endif %}
+      {% if next_i < notes.size %}{% assign nx = notes[next_i] %}<a class="n-pager-next" href="{{ nx.url | relative_url }}"><span class="overline">Next</span><span>{{ nx.title }}</span></a>{% endif %}
+    </nav>
+  </article>
+</div>
