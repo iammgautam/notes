@@ -1,0 +1,18 @@
+<footer class="wrap site-footer">
+  <p>© {{ site.time | date: '%Y' }} {{ site.author }}</p>
+  <p class="mono"><a href="https://github.com/iammgautam/notes">Source on GitHub</a></p>
+</footer>
+<script>
+  // Theme toggle, shared behaviour with the portfolio.
+  document.querySelector('[data-theme-toggle]')?.addEventListener('click', () => {
+    const r = document.documentElement;
+    const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    r.dataset.theme = dark ? 'light' : 'dark';
+    try { localStorage.setItem('theme', r.dataset.theme); } catch (e) {}
+  });
+  // Section list starts collapsed on small screens so the note comes first.
+  if (matchMedia('(max-width: 999px)').matches) document.querySelector('.n-toc')?.removeAttribute('open');
+  const h = document.querySelector('.site-header');
+  const s = () => h.classList.toggle('is-scrolled', scrollY > 8);
+  addEventListener('scroll', s, { passive: true }); s();
+</script>

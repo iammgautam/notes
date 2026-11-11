@@ -1,0 +1,15 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+{% if page.title and page.layout != 'home' %}{% assign t = page.title | append: ' · Notes' %}{% else %}{% assign t = 'Notes · Mithilesh Gautam' %}{% endif %}
+<title>{{ t }}</title>
+<meta name="description" content="{{ page.summary | default: site.description | strip_html | escape }}" />
+<meta property="og:title" content="{{ t | escape }}" />
+<meta property="og:description" content="{{ page.summary | default: site.description | strip_html | escape }}" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%237c5cff'/><text x='16' y='22' font-family='monospace' font-size='15' font-weight='700' text-anchor='middle' fill='white'>mg</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<!-- Shared design system: tokens + base components live in the portfolio. -->
+<link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="{{ '/assets/notes.css' | relative_url }}" />
+<script>try { const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>

@@ -1,0 +1,32 @@
+---
+layout: base
+---
+{% assign s = site.data.sections | where: "id", page.section | first %}
+{% assign notes = site.pages | where: "section", page.section | where_exp: "p", "p.layout == 'note'" | sort: "order" %}
+<div class="wrap n-page">
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="{{ '/' | relative_url }}">Notes</a> <span aria-hidden="true">/</span> <span aria-current="page">{{ s.title }}</span></nav>
+  <header class="n-head">
+    <h1 class="display n-title">{{ s.title }}</h1>
+    <p class="lede">{{ s.blurb }}</p>
+  </header>
+
+  {% if content != "" %}<div class="prose n-intro">{{ content }}</div>{% endif %}
+
+  {% if notes.size > 0 %}
+  <ol class="n-index">
+    {% for n in notes %}
+    <li>
+      <a href="{{ n.url | relative_url }}">
+        <span class="n-index-num" aria-hidden="true">{{ forloop.index | prepend: '00' | slice: -2, 2 }}</span>
+        <span class="n-index-body">
+          <span class="n-index-title">{{ n.title }}</span>
+          {% if n.summary %}<span class="n-index-sum">{{ n.summary }}</span>{% endif %}
+        </span>
+      </a>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="n-empty">No notes in this section yet.</p>
+  {% endif %}
+</div>

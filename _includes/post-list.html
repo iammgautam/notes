@@ -1,0 +1,14 @@
+{% if site.posts.size > 0 %}
+<ol class="n-posts">
+  {% for post in site.posts limit: include.limit %}
+  <li>
+    <a class="n-post" href="{{ post.url | relative_url }}">
+      <span class="h3">{{ post.title }}</span>
+      <span class="n-post-meta"><time datetime="{{ post.date | date_to_xmlschema }}">{{ post.date | date: '%B %-d, %Y' }}</time>{% if post.summary %} · {{ post.summary }}{% endif %}</span>
+    </a>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<p class="n-empty">No posts yet. The first write-ups, on Postgres performance and building a RAG platform, are being drafted.</p>
+{% endif %}

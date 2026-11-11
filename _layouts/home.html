@@ -1,0 +1,42 @@
+---
+layout: base
+---
+<section class="wrap n-hero">
+  <p class="overline">Notes · Blog</p>
+  <h1 class="display n-title">{{ page.heading }}</h1>
+  <p class="lede">{{ page.lede }}</p>
+</section>
+
+{% assign groups = "core|Interview core|Short and direct. What to recognise, what to write, what to say.;deep|Engineering deep dives|How things actually behave in production, from someone who has run them." | split: ";" %}
+{% for g in groups %}
+  {% assign parts = g | split: "|" %}
+  <section class="wrap section" aria-labelledby="g-{{ parts[0] }}">
+    <header class="section-head">
+      <p class="overline">{{ forloop.index | prepend: '0' }} · {{ parts[1] }}</p>
+      <h2 class="h2" id="g-{{ parts[0] }}">{{ parts[2] }}</h2>
+    </header>
+    <ul class="n-grid">
+      {% for s in site.data.sections %}{% if s.group == parts[0] %}
+        {% assign count = site.pages | where: "section", s.id | where_exp: "p", "p.layout == 'note'" | size %}
+        <li>
+          <a class="n-card" href="{{ '/' | append: s.id | append: '/' | relative_url }}">
+            <span class="n-card-top">
+              <span class="h3">{{ s.title }}</span>
+              <span class="tag">{{ count }} {% if count == 1 %}note{% else %}notes{% endif %}</span>
+            </span>
+            <span class="n-card-blurb">{{ s.blurb }}</span>
+          </a>
+        </li>
+      {% endif %}{% endfor %}
+    </ul>
+  </section>
+{% endfor %}
+
+<section class="wrap section" aria-labelledby="g-blog">
+  <header class="section-head">
+    <p class="overline">03 · Blog</p>
+    <h2 class="h2" id="g-blog">Write-ups from real work</h2>
+  </header>
+  {% include post-list.html limit=3 %}
+  <p><a class="btn btn-ghost" href="{{ '/blog/' | relative_url }}">See all posts</a></p>
+</section>
