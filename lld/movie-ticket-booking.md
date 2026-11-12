@@ -1,43 +1,93 @@
 ---
 title: Design a movie ticket booking system
 section: lld
-order: 13
-summary: BookMyShow-style booking with shows, seat maps, temporary seat holds with expiry, payment, and concurrency-safe locking to prevent double booking.
+order: 32
+phase: "Phase 5 · Intermediate"
+summary: BookMyShow-style booking with per-show seat maps, seat holds that expire, a payment step, pricing strategies, and no double booking under load.
 ---
 
 ## Requirements
 
-- Browse movies by city → theaters → shows (screen + time).
-- View a show's seat map with status and price per seat category.
-- Select seats → **hold** them for a few minutes → pay → confirm booking.
-- Hold expires if payment doesn't complete; seats return to available.
-- Cancel a booking (refund policy out of scope).
-- **No double booking** under heavy concurrency (popular releases).
-- Out of scope: real payments, search ranking, notifications (mention).
+Clarifying questions worth asking:
 
-## Entities
+- Can a user pick specific seats, or do we auto-assign? (Pick specific seats.)
+- How long is a seat held while the user pays? (A few minutes, configurable.)
+- Is a multi-seat selection all-or-nothing? (Yes. Half a booking is useless.)
+- Does price vary by seat category, time or day? (Category, plus a weekend surcharge.)
+- If payment succeeds after the hold expired, what happens? (Confirm if nobody else took the seats, otherwise refund.)
 
-| Entity | Responsibility |
-|--------|----------------|
-| `Movie`, `Theater`, `Screen` | Catalog; screen has a seat layout |
-| `Seat` | Row, number, `SeatCategory` (physical seat) |
-| `Show` | Movie + screen + start time; owns per-show seat status |
-| `ShowSeat` | Status for one seat in one show: `AVAILABLE`, `HELD`, `BOOKED` |
-| `Booking` | User, show, seats, amount, status |
-| `SeatLockProvider` | Hold/release seats with TTL |
-| `PaymentService` | Charge (strategy per method) |
-| `BookingService` | Orchestrates hold → pay → confirm |
+Functional:
 
-> **Gotcha:** Seat status belongs to `(show, seat)`, not to `Seat`. The same physical seat is free at 6 pm and booked at 9 pm.
+- Browse shows for a movie in a city (city → theatre → screen → show).
+- View a show's seat map with what is still free.
+- Hold seats, pay, confirm. Holds expire if payment does not finish.
 
-## Class sketch
+Non-functional:
+
+- **No double booking**, even when hundreds of users click the same seat on release day.
+- Never hold a lock while waiting on the payment gateway.
+- A double-clicked "pay" charges once.
+
+Out of scope: cancellation and refund policy (see [hotel booking]({{ '/lld/hotel-booking/' | relative_url }})), search ranking, notifications.
+
+## Entities and relationships
+
+```text
++-----------+ has * +-----------+ has * +-------------------+
+| Theatre   |------>| Screen    |------>| Seat              |
+| id, city  |       | id        |       | id, category      |
++-----------+       +-----------+       +-------------------+
+      ^                   ^                        ^
+      | uses              | uses                   | wraps 1
++-----+-------------------+---+  has *  +----------+--------+
+| Show                        |-------->| ShowSeat          |
+| id, movie, starts_at        |         | status, holder    |
+| lock: Lock (one per show)   |         | hold_until        |
++-----------------------------+         | version           |
+      ^ refers to                       +-------------------+
+      |
++-----+-----------------------+  uses   +-------------------+
+| BookingService              |-------->| <<abstract>>      |
+| hold(), pay(), find_shows() |         | PricingStrategy   |
+| bookings: {id: Booking}     |         | price(show, seat) |
++-----------------------------+         +-------------------+
+      | uses             | creates        ^ is-a
+      v                  v                CategoryPricing
++----------------+  +----------------+    WeekendSurcharge (wraps one)
+| PaymentGateway |  | Booking        |
+| <<protocol>>   |  | id, user, show |
+| charge/refund  |  | seats, amount  |
++----------------+  | status         |
+                    +----------------+
+```
+
+> **Gotcha:** Seat status belongs to `(show, seat)`, not to `Seat`. The same physical seat is free at 6 pm and booked at 9 pm, so `ShowSeat` holds the status.
+
+## Patterns and why
+
+| Pattern | Where | Why (what it prevents) |
+|---|---|---|
+| Strategy | `PricingStrategy` | Price rules hard-coded in `hold()`, edited for every promotion |
+| Decorator | `WeekendSurcharge` wraps another strategy | A subclass per combination (gold-weekend, silver-weekend) |
+| State | `SeatStatus`, `BookingStatus` | Illegal moves such as BOOKED back to HELD |
+| Protocol (port) | `PaymentGateway` | Booking logic tied to one payment provider's SDK |
+
+## Code
 
 ```python
+from __future__ import annotations
+
 import threading
 import time
 import uuid
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
+from decimal import Decimal
 from enum import Enum
+from typing import Callable, Protocol
+
+CENT = Decimal("0.01")
 
 
 class SeatStatus(Enum):
@@ -47,154 +97,296 @@ class SeatStatus(Enum):
 
 
 class BookingStatus(Enum):
-    PENDING = "pending"
+    PENDING = "pending"       # seats held, waiting for payment
+    PAYING = "paying"         # charge in flight; blocks a second pay() call
     CONFIRMED = "confirmed"
-    CANCELLED = "cancelled"
+    FAILED = "failed"         # payment declined or seats lost
+
+
+class SeatUnavailable(Exception):
+    pass
 
 
 @dataclass(frozen=True)
 class Seat:
     id: str
-    row: str
-    number: int
-    category: str          # "silver", "gold"
+    category: str
+
+
+@dataclass
+class Screen:
+    id: str
+    seats: list[Seat]
+
+
+@dataclass
+class Theatre:
+    id: str
+    city: str
+    screens: list[Screen]
 
 
 @dataclass
 class ShowSeat:
     seat: Seat
-    price: int
     status: SeatStatus = SeatStatus.AVAILABLE
-    held_by: str | None = None
-    hold_expires: float = 0.0
+    holder: str | None = None          # booking id
+    hold_until: float = 0.0
+    version: int = 0                   # bumped on every change (DB optimistic lock)
 
 
 @dataclass
 class Show:
     id: str
-    movie_id: str
-    screen_id: str
-    start: float
-    seats: dict[str, ShowSeat]
+    movie: str
+    theatre: Theatre
+    screen: Screen
+    starts_at: datetime
+    seats: dict[str, ShowSeat] = field(init=False)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def __post_init__(self) -> None:
+        self.seats = {s.id: ShowSeat(s) for s in self.screen.seats}
+
+
+class PricingStrategy(ABC):
+    @abstractmethod
+    def price(self, show: Show, seat: Seat) -> Decimal: ...
+
+
+class CategoryPricing(PricingStrategy):
+    def __init__(self, base: dict[str, Decimal]) -> None:
+        self.base = base
+
+    def price(self, show, seat):
+        return self.base[seat.category]
+
+
+class WeekendSurcharge(PricingStrategy):
+    def __init__(self, inner: PricingStrategy, factor: Decimal) -> None:
+        self.inner, self.factor = inner, factor
+
+    def price(self, show, seat):
+        p = self.inner.price(show, seat)
+        return (p * self.factor).quantize(CENT) if show.starts_at.weekday() >= 5 else p
+
+
+class PaymentGateway(Protocol):
+    def charge(self, idempotency_key: str, amount: Decimal) -> bool: ...
+    def refund(self, idempotency_key: str, amount: Decimal) -> None: ...
 
 
 @dataclass
 class Booking:
+    id: str
     user_id: str
-    show_id: str
-    seat_ids: list[str]
-    amount: int
+    show: Show
+    seat_ids: tuple[str, ...]
+    amount: Decimal
     status: BookingStatus = BookingStatus.PENDING
-    id: str = field(default_factory=lambda: uuid.uuid4().hex)
-```
 
-## Seat locking
 
-```python
-class SeatLockProvider:
-    def __init__(self, ttl_seconds: int = 300, clock=time.monotonic):
-        self.ttl, self.clock = ttl_seconds, clock
-
-    def _free(self, ss: ShowSeat, now: float) -> bool:
-        if ss.status is SeatStatus.AVAILABLE:
-            return True
-        # expired hold counts as free (lazy expiry)
-        return ss.status is SeatStatus.HELD and ss.hold_expires <= now
-
-    def hold(self, show: Show, seat_ids: list[str], user_id: str) -> None:
-        with show.lock:                                 # all-or-nothing
-            now = self.clock()
-            if not all(self._free(show.seats[s], now) for s in seat_ids):
-                raise ValueError("some seats unavailable")
-            for s in seat_ids:
-                ss = show.seats[s]
-                ss.status, ss.held_by = SeatStatus.HELD, user_id
-                ss.hold_expires = now + self.ttl
-
-    def confirm(self, show: Show, seat_ids: list[str], user_id: str) -> None:
-        with show.lock:
-            now = self.clock()
-            for s in seat_ids:
-                ss = show.seats[s]
-                if ss.held_by != user_id or ss.hold_expires <= now:
-                    raise ValueError("hold expired")
-            for s in seat_ids:
-                show.seats[s].status = SeatStatus.BOOKED
-
-    def release(self, show: Show, seat_ids: list[str], user_id: str) -> None:
-        with show.lock:
-            for s in seat_ids:
-                ss = show.seats[s]
-                if ss.held_by == user_id and ss.status is SeatStatus.HELD:
-                    ss.status, ss.held_by = SeatStatus.AVAILABLE, None
-```
-
-- One lock **per show** keeps check-and-hold atomic for a multi-seat selection without lock-ordering issues.
-- Finer grain: per-seat locks acquired in sorted seat-id order to avoid deadlock.
-
-## Booking flow
-
-```python
 class BookingService:
-    def __init__(self, shows: dict[str, Show], locks: SeatLockProvider, payments):
-        self.shows, self.locks, self.payments = shows, locks, payments
+    def __init__(self, pricing: PricingStrategy, payments: PaymentGateway,
+                 hold_seconds: float = 300,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self.pricing, self.payments = pricing, payments
+        self.hold_seconds, self.clock = hold_seconds, clock
+        self.shows: dict[str, Show] = {}
         self.bookings: dict[str, Booking] = {}
 
-    def start(self, user_id: str, show_id: str, seat_ids: list[str]) -> Booking:
-        show = self.shows[show_id]
-        self.locks.hold(show, seat_ids, user_id)
-        amount = sum(show.seats[s].price for s in seat_ids)
-        b = Booking(user_id, show_id, seat_ids, amount)
-        self.bookings[b.id] = b
-        return b
+    def add_show(self, show: Show) -> None:
+        self.shows[show.id] = show
 
-    def pay(self, booking_id: str, method) -> Booking:
-        b = self.bookings[booking_id]
-        show = self.shows[b.show_id]
-        if not self.payments.charge(b.user_id, b.amount, method):   # no lock held
-            self.locks.release(show, b.seat_ids, b.user_id)
-            b.status = BookingStatus.CANCELLED
-            return b
+    def find_shows(self, city: str, movie: str) -> list[Show]:
+        return [s for s in self.shows.values()
+                if s.theatre.city == city and s.movie == movie]
+
+    def _free(self, ss: ShowSeat) -> bool:
+        return ss.status is SeatStatus.AVAILABLE or (
+            ss.status is SeatStatus.HELD and ss.hold_until <= self.clock())
+
+    def available(self, show_id: str) -> list[str]:
+        show = self.shows[show_id]
+        with show.lock:
+            return [sid for sid, ss in show.seats.items() if self._free(ss)]
+
+    def hold(self, user_id: str, show_id: str, seat_ids: list[str]) -> Booking:
+        show, booking_id = self.shows[show_id], uuid.uuid4().hex
+        with show.lock:                                  # all-or-nothing
+            seats = [show.seats[s] for s in seat_ids]
+            if not all(self._free(ss) for ss in seats):
+                raise SeatUnavailable(seat_ids)
+            until = self.clock() + self.hold_seconds
+            for ss in seats:
+                ss.status, ss.holder, ss.hold_until = SeatStatus.HELD, booking_id, until
+                ss.version += 1
+        amount = sum((self.pricing.price(show, ss.seat) for ss in seats), Decimal(0))
+        booking = Booking(booking_id, user_id, show, tuple(seat_ids), amount)
+        self.bookings[booking_id] = booking
+        return booking
+
+    def pay(self, booking_id: str) -> Booking:
+        booking = self.bookings[booking_id]
+        show = booking.show
+        with show.lock:
+            if booking.status is not BookingStatus.PENDING:
+                return booking                           # double click: no-op
+            booking.status = BookingStatus.PAYING
+        paid = self.payments.charge(booking_id, booking.amount)   # no lock held
+        with show.lock:
+            seats = [show.seats[s] for s in booking.seat_ids]
+            # An expired hold is only lost if someone else claimed the seat.
+            still_ours = all(ss.holder == booking_id and
+                             ss.status is SeatStatus.HELD for ss in seats)
+            for ss in seats:
+                if ss.holder == booking_id and ss.status is SeatStatus.HELD:
+                    if paid and still_ours:
+                        ss.status = SeatStatus.BOOKED
+                    else:
+                        ss.status, ss.holder = SeatStatus.AVAILABLE, None
+                    ss.version += 1
+            ok = paid and still_ours
+            booking.status = BookingStatus.CONFIRMED if ok else BookingStatus.FAILED
+        if paid and not ok:
+            self.payments.refund(booking_id, booking.amount)
+        return booking
+
+
+if __name__ == "__main__":
+    import random
+    from concurrent.futures import ThreadPoolExecutor
+
+    class FakeGateway:
+        def __init__(self) -> None:
+            self.charged, self.refunded, self.decline = {}, set(), set()
+
+        def charge(self, key, amount):
+            if key in self.decline:
+                return False
+            self.charged.setdefault(key, amount)         # idempotent by key
+            return True
+
+        def refund(self, key, amount):
+            self.refunded.add(key)
+
+    now = [0.0]
+    gw = FakeGateway()
+    pricing = WeekendSurcharge(CategoryPricing(
+        {"gold": Decimal("250"), "silver": Decimal("150")}), Decimal("1.2"))
+    svc = BookingService(pricing, gw, hold_seconds=300, clock=lambda: now[0])
+    seats = [Seat(f"A{i}", "gold" if i < 5 else "silver") for i in range(20)]
+    pvr = Theatre("pvr", "Pune", [Screen("s1", seats)])
+    svc.add_show(Show("sat", "Dune", pvr, pvr.screens[0], datetime(2026, 11, 14, 18)))
+    assert [s.id for s in svc.find_shows("Pune", "Dune")] == ["sat"]
+
+    b1 = svc.hold("u1", "sat", ["A1", "A6"])
+    assert b1.amount == Decimal("480.00")                # (250 + 150) * 1.2
+    try:
+        svc.hold("u2", "sat", ["A6", "A7"])
+        raise AssertionError("double hold")
+    except SeatUnavailable:
+        pass
+    assert svc.pay(b1.id).status is BookingStatus.CONFIRMED
+    assert svc.pay(b1.id).status is BookingStatus.CONFIRMED and len(gw.charged) == 1
+
+    b2 = svc.hold("u2", "sat", ["A2"])
+    now[0] += 301                                        # u2's hold expires
+    b3 = svc.hold("u3", "sat", ["A2"])                   # u3 claims the seat
+    assert svc.pay(b2.id).status is BookingStatus.FAILED and b2.id in gw.refunded
+    assert svc.pay(b3.id).status is BookingStatus.CONFIRMED
+
+    b4 = svc.hold("u4", "sat", ["A3"])                   # declined card frees seats
+    gw.decline.add(b4.id)
+    assert svc.pay(b4.id).status is BookingStatus.FAILED and "A3" in svc.available("sat")
+
+    # Stress: 200 users grab random overlapping pairs; no seat sold twice.
+    pool_seats = [f"A{n}" for n in range(8, 20)]
+
+    def attempt(i: int) -> Booking | None:
+        pair = random.sample(pool_seats, 2)
         try:
-            self.locks.confirm(show, b.seat_ids, b.user_id)
-        except ValueError:
-            self.payments.refund(b.user_id, b.amount)   # paid after hold expired
-            b.status = BookingStatus.CANCELLED
-            raise
-        b.status = BookingStatus.CONFIRMED
-        return b
+            return svc.pay(svc.hold(f"user{i}", "sat", pair).id)
+        except SeatUnavailable:
+            return None
+
+    with ThreadPoolExecutor(16) as pool:
+        won = [b for b in pool.map(attempt, range(200)) if b]
+    sold = [s for b in won if b.status is BookingStatus.CONFIRMED for s in b.seat_ids]
+    assert len(sold) == len(set(sold))
+    seat_map = svc.shows["sat"].seats
+    assert {s for s in pool_seats if seat_map[s].status is SeatStatus.BOOKED} == set(sold)
+    print("movie booking ok")
 ```
 
-1. User selects seats → `start` holds them (or fails fast).
-2. User pays within TTL → `pay` charges **outside** the lock → `confirm` re-checks the hold.
-3. Payment fails → release. Payment succeeds after expiry → refund.
-4. Expired holds are treated as free lazily; a background sweeper can also reset them for accurate seat maps.
+The in-memory lock is the interview answer. In PostgreSQL the same "hold" is an optimistic update: the seat map the user saw carried each seat's `version`, and the hold succeeds only if nobody changed those rows since.
 
-## Patterns used
+```sql
+UPDATE show_seat
+   SET status = 'held', booking_id = $1, version = version + 1,
+       hold_until = now() + interval '5 minutes'
+ WHERE show_id = $2
+   AND (seat_id, version) IN (('A1', 3), ('A6', 7));
+-- rowcount must equal 2; otherwise ROLLBACK and show "seats taken"
+```
 
-| Pattern | Where | Why |
-|---------|-------|-----|
-| Strategy | Payment method, pricing (weekday/weekend, dynamic) | Vary without touching booking |
-| State | `SeatStatus`, `BookingStatus` | Explicit legal transitions |
-| Facade | `BookingService` | One API over locks, payment, notification |
-| Observer | Notify waitlist / user on confirm or release | Decoupled side effects |
-| Repository | Shows, bookings | In-memory now, DB later |
+## Key flows
 
-## Concurrency in production
+```text
+User        BookingService      Show.lock     Pricing      PaymentGateway
+ | hold(A1,A6)    |                 |            |                |
+ |--------------->| acquire ------->|            |                |
+ |                | all free? mark HELD,         |                |
+ |                | holder=booking, until=now+5m |                |
+ |                | release ------->|            |                |
+ |                | price(seat) x2 ------------->|                |
+ |<-- Booking ----|                 |            |                |
+ | pay(booking)   |                 |            |                |
+ |--------------->| PENDING->PAYING under lock   |                |
+ |                | charge(booking_id, amount) ------------------>|
+ |                |<------------------------------------ ok ------|
+ |                | acquire; still ours? HELD->BOOKED; release    |
+ |<-- CONFIRMED --|                 |            |                |
+```
 
-- **DB constraint:** `UNIQUE(show_id, seat_id)` on `booking_seat` makes a double book fail at insert.
-- **Pessimistic:** `select_for_update()` on `show_seat` rows filtered by ids, ordered by id.
-- **Optimistic:** `UPDATE show_seat SET status='held', held_by=?, version=version+1 WHERE id IN (...) AND status='available'`; if rows affected != requested, roll back.
-- **Distributed hold:** Redis `SET show:{id}:seat:{s} user NX PX 300000` per seat; release with a check-and-delete Lua script.
+```text
+User A                 BookingService                 User B
+ | hold(A2) ok (t=0)         |                          |
+ |   ... pays slowly ...     | t=301: A's hold expired  |
+ |                           |<------ hold(A2) ---------|
+ |                           | A2 free (expired) -> B   |
+ | pay() ------------------->| charge ok, holder != A   |
+ |<-- FAILED + refund -------|                          |
+```
 
-> **In production:** never hold a DB row lock across a payment gateway call. Hold with a status + expiry, commit, then pay.
+## Edge cases
 
-## Extensions interviewers ask
+- Selection mixes a free seat and a taken seat: reject the whole selection, hold nothing.
+- Payment lands after the hold expired but nobody took the seats: confirm. The hold is lost only if someone else claimed a seat.
+- Payment declined: release the seats immediately instead of waiting for expiry.
+- Double-clicked "pay": the second call sees `PAYING` or `CONFIRMED` and returns; the gateway also dedups by booking id.
+- Seat map is stale by the time the user clicks: `hold` re-checks under the lock; the UI shows "just taken".
 
-- **Hold expiry at scale:** delayed job or Redis key expiry events; or just lazy expiry on read.
-- **Seat recommendation:** "best available N together" strategy over the layout grid.
-- **Dynamic pricing:** pricing strategy using occupancy and time to show.
-- **Coupons / offers:** decorator or chain over the base price.
-- **Cancellations and refunds:** refund policy strategy based on time to show.
-- **Waitlist:** observer on seat release.
+## Production follow-ups
+
+**How do you stop double booking?** One lock per show makes "check all seats free, then mark them held" atomic, and there is no lock-ordering risk because a booking never spans two shows. The GIL does not make that check-then-act atomic on its own. Across servers, use the optimistic `version` update above, or `SELECT ... FOR UPDATE` on the seat rows ordered by seat id, and back it with `UNIQUE(show_id, seat_id)` on the `booking_seat` table as the last line of defense.
+
+**What survives a restart?** Seat status, holder, `hold_until` and booking status live in the database, so a restart loses nothing. Use wall-clock `hold_until` timestamps from the database (`now()`) rather than each server's monotonic clock, so all servers agree when a hold expires.
+
+**What about retries around payment?** The booking id is the gateway's idempotency key, so a retried charge never bills twice. If the app crashes between "charge ok" and "mark booked", a reconciliation job reads `PAYING` bookings older than a minute, asks the gateway for the charge status and finishes or refunds. Webhooks from the gateway are deduplicated by event id.
+
+**How do you add a new pricing rule?** Write another `PricingStrategy` (early-bird, dynamic by occupancy) or another decorator, and wire it where `BookingService` is built. `hold()` and `pay()` stay untouched.
+
+**What breaks at 10×?** A blockbuster release puts thousands of users on one show, so that one lock (or row set) becomes the hot spot. Keep the critical section tiny (no I/O inside it), hold seats in Redis with `SET seat_key booking_id NX PX 300000` per seat if the database cannot keep up, and put a virtual waiting room in front of the sale. Shows are independent, so shard by `show_id`.
+
+**What do you log and measure?** Log every hold, confirm, release and refund with booking id, show id and seats. Measure hold success rate, hold-to-pay conversion, holds that expired, late payments refunded, and lock wait time per show. Alert on any confirmed seat appearing in two bookings.
+
+**How do expired holds get cleaned up?** Lazy expiry is enough for correctness: `_free` treats an expired hold as free. A periodic sweeper resets them so occupancy metrics stay accurate.
+
+## Interview follow-ups
+
+- **Per-seat locks instead of per-show?** Possible, but you must acquire them in sorted seat-id order to avoid deadlock. Per-show is simpler and contention is rarely the bottleneck.
+- **Why not hold a database lock until payment finishes?** Payment takes seconds to minutes. A row lock that long blocks every other buyer and exhausts connections; a `HELD` status with an expiry does the same job without a lock.
+- **Seat recommendations ("best 4 together")?** A strategy that scans each row of the layout for runs of free seats and scores them by distance from the center.
+- **Waitlist when sold out?** Observers on seat release notify the next user in a FIFO queue, who gets a short hold.
+- **Cancellation?** Release `BOOKED` seats back to `AVAILABLE` under the show lock, then refund through a cancellation-policy strategy keyed on time to showtime.

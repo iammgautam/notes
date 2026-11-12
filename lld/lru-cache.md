@@ -1,109 +1,191 @@
 ---
 title: Design an LRU cache
 section: lld
-order: 9
-summary: O(1) get and put LRU cache with a hashmap plus doubly linked list, full Python code, the OrderedDict shortcut, thread safety and eviction-policy extensions.
+order: 24
+phase: "Phase 5 · Intermediate"
+summary: O(1) LRU cache with a hashmap and doubly linked list, a thread-safe version with a stress test, the OrderedDict shortcut, and scaling follow-ups.
 ---
 
 ## Requirements
 
-- `get(key)`: return value or `None`/`-1`; marks key as most recently used.
-- `put(key, value)`: insert or update; marks as most recently used.
-- Fixed capacity; on overflow evict the **least recently used** key.
-- Both operations `O(1)`.
-- Follow-ups: thread safety, TTL, pluggable eviction policy.
+Clarifying questions to ask first:
 
-## Core idea
+- Capacity counted in entries or in bytes?
+- What does a miss return: `None`, a default, or should the cache load the value?
+- Does `put` on an existing key count as a use? (Yes, almost always.)
+- Called from multiple threads?
+- Any expiry? (If yes, see [Design a cache with expiry (TTL)]({{ '/lld/ttl-cache/' | relative_url }}).)
 
-- **Hashmap** `key → node` gives `O(1)` lookup.
-- **Doubly linked list** keeps recency order: head = most recent, tail = least recent. With a node pointer you can unlink and relink in `O(1)`.
-- Sentinel `head` and `tail` nodes remove all the empty-list edge cases.
+Functional:
+
+- `get(key)` returns the value or a default, and marks the key most recently used.
+- `put(key, value)` inserts or updates, and marks it most recently used.
+- When full, inserting a new key evicts the least recently used one.
+- `delete(key)`; hit, miss and eviction counters.
+
+Non-functional: `get` and `put` in `O(1)`; safe under concurrent access.
+
+Out of scope: TTL, size-in-bytes accounting, loading on miss (follow-ups).
+
+## Entities and relationships
 
 ```text
-head <-> [k3] <-> [k1] <-> [k7] <-> tail
-          MRU                 LRU (evict this)
++--------------------------------+         +-------------------------+
+| LRUCache[K, V]                 | 1     * | _Node                   |
+| capacity: int                  |-------->| key, val                |
+| _map: dict[K, _Node]           | indexes | prev, next: _Node       |
+| _head, _tail: _Node (sentinel) |         +-------------------------+
+| _lock: Lock                    |
+| hits, misses, evictions        |
+| get, put, delete, keys         |
++--------------------------------+
+
+ _map:      k3 --+        k1 --+        k7 --+
+                 v             v             v
+ head <-> [k3 | v] <-> [k1 | v] <-> [k7 | v] <-> tail
+          MRU                       LRU: evicted next
 ```
 
-## Full code
+- The **dict** finds a node in `O(1)`.
+- The **doubly linked list** keeps recency order. With a pointer to a node you can unlink it and move it to the front in `O(1)`; a singly linked list cannot unlink without its predecessor.
+- **Sentinel** head and tail nodes mean no `None` checks for empty-list or end-of-list cases.
+
+## Patterns and why
+
+| Pattern / idiom | Where | Why (what it prevents) |
+|-----------------|-------|------------------------|
+| Dict + intrusive list | `_map` + `_Node` | Neither alone gives `O(1)` for both lookup and reorder |
+| Sentinel nodes | `_head`, `_tail` | Edge-case bugs on empty list, first and last node |
+| Monitor (Java `synchronized`) | `_lock` around every method | Half-rewired pointers seen by another thread |
+| Strategy (extension) | `EvictionPolicy`: LRU, LFU, FIFO | Changing policy without rewriting storage |
+
+## Code
 
 ```python
+import random
+import sys
 import threading
+from collections.abc import Hashable
 
 
-class Node:
+class _Node:
     __slots__ = ("key", "val", "prev", "next")
 
     def __init__(self, key=None, val=None):
         self.key, self.val = key, val
-        self.prev = self.next = None
+        self.prev: _Node | None = None
+        self.next: _Node | None = None
 
 
-class LRUCache:
+class LRUCache[K: Hashable, V]:
     def __init__(self, capacity: int):
         if capacity <= 0:
             raise ValueError("capacity must be positive")
-        self.cap = capacity
-        self.map: dict = {}
-        self.head, self.tail = Node(), Node()     # sentinels
-        self.head.next, self.tail.prev = self.tail, self.head
+        self.capacity = capacity
+        self._map: dict[K, _Node] = {}
+        self._head, self._tail = _Node(), _Node()      # sentinels
+        self._head.next, self._tail.prev = self._tail, self._head
         self._lock = threading.Lock()
+        self.hits = self.misses = self.evictions = 0
 
-    # list helpers
-    def _remove(self, node: Node) -> None:
-        node.prev.next, node.next.prev = node.next, node.prev
+    # ---- list helpers (caller holds the lock) ----
+    def _unlink(self, n: _Node) -> None:
+        n.prev.next, n.next.prev = n.next, n.prev
 
-    def _add_front(self, node: Node) -> None:
-        node.prev, node.next = self.head, self.head.next
-        self.head.next.prev = node
-        self.head.next = node
+    def _push_front(self, n: _Node) -> None:
+        n.prev, n.next = self._head, self._head.next
+        self._head.next.prev = n
+        self._head.next = n
 
-    # public API
-    def get(self, key):
-        with self._lock:                  # get mutates order, so lock it too
-            node = self.map.get(key)
+    # ---- public API ----
+    def get(self, key: K, default: V | None = None) -> V | None:
+        with self._lock:                  # get rewires pointers: it is a write
+            node = self._map.get(key)
             if node is None:
-                return None
-            self._remove(node)
-            self._add_front(node)
+                self.misses += 1
+                return default
+            self.hits += 1
+            self._unlink(node)
+            self._push_front(node)
             return node.val
 
-    def put(self, key, val) -> None:
+    def put(self, key: K, val: V) -> None:
         with self._lock:
-            node = self.map.get(key)
-            if node:
+            node = self._map.get(key)
+            if node is not None:          # update: no eviction needed
                 node.val = val
-                self._remove(node)
-                self._add_front(node)
+                self._unlink(node)
+                self._push_front(node)
                 return
-            if len(self.map) == self.cap:
-                lru = self.tail.prev
-                self._remove(lru)
-                del self.map[lru.key]     # why the node stores its key
-            node = Node(key, val)
-            self.map[key] = node
-            self._add_front(node)
+            if len(self._map) == self.capacity:
+                lru = self._tail.prev
+                self._unlink(lru)
+                del self._map[lru.key]    # why the node stores its key
+                self.evictions += 1
+            node = _Node(key, val)
+            self._map[key] = node
+            self._push_front(node)
+
+    def delete(self, key: K) -> bool:
+        with self._lock:
+            node = self._map.pop(key, None)
+            if node is None:
+                return False
+            self._unlink(node)
+            return True
+
+    def keys(self) -> list[K]:           # MRU -> LRU, for tests and debugging
+        with self._lock:
+            out, n = [], self._head.next
+            while n is not self._tail:
+                out.append(n.key)
+                n = n.next
+            return out
+
+    def __len__(self) -> int:
+        return len(self._map)
 
 
 if __name__ == "__main__":
-    c = LRUCache(2)
-    c.put(1, "a"); c.put(2, "b")
+    c = LRUCache[int, str](2)
+    c.put(1, "a")
+    c.put(2, "b")
     assert c.get(1) == "a"                # 1 is now MRU
-    c.put(3, "c")                         # evicts 2
-    assert c.get(2) is None
-    c.put(1, "A")                         # update, no eviction
-    assert c.get(1) == "A" and c.get(3) == "c"
+    c.put(3, "c")                         # evicts 2, the LRU
+    assert c.get(2) is None and c.evictions == 1
+    c.put(1, "A")                         # update in place, no eviction
+    assert c.get(1) == "A" and c.get(3) == "c" and c.keys() == [3, 1]
+    assert c.delete(3) and not c.delete(3) and c.keys() == [1]
+
+    sys.setswitchinterval(1e-6)                  # switch threads often so races show up
+    # stress: 8 threads of random get/put/delete; list and map must agree
+    shared = LRUCache[int, int](50)
+
+    def work(seed: int) -> None:
+        rnd = random.Random(seed)
+        for _ in range(5000):
+            k, op = rnd.randrange(200), rnd.random()
+            if op < 0.5:
+                shared.put(k, k * 10)
+            elif op < 0.9:
+                assert shared.get(k) in (None, k * 10)
+            else:
+                shared.delete(k)
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    order = shared.keys()
+    assert len(order) == len(shared) <= 50
+    assert set(order) == set(shared._map)
+    print("ok")
 ```
 
-## Complexity
+### The `OrderedDict` shortcut
 
-| Op | Time | Space |
-|----|------|-------|
-| `get` | `O(1)` | |
-| `put` | `O(1)` | `O(capacity)` total |
-
-## OrderedDict shortcut
-
-`collections.OrderedDict` is a dict backed by a doubly linked list, so it already does this. Mention it, then implement by hand if they want to see the internals.
+`collections.OrderedDict` is a dict plus a doubly linked list, with `move_to_end` and `popitem(last=False)` in `O(1)`. Mention it first; implement by hand if the interviewer wants the internals.
 
 ```python
 from collections import OrderedDict
@@ -111,71 +193,85 @@ from collections import OrderedDict
 
 class LRUCache:
     def __init__(self, capacity: int):
-        self.cap, self.d = capacity, OrderedDict()
+        self.capacity, self.d = capacity, OrderedDict()
 
-    def get(self, key):
+    def get(self, key, default=None):
         if key not in self.d:
-            return None
+            return default
         self.d.move_to_end(key)           # mark MRU
         return self.d[key]
 
-    def put(self, key, val):
+    def put(self, key, val) -> None:
         self.d[key] = val
         self.d.move_to_end(key)
-        if len(self.d) > self.cap:
-            self.d.popitem(last=False)    # pop LRU (front)
+        if len(self.d) > self.capacity:
+            self.d.popitem(last=False)    # drop LRU (front)
+
+
+c = LRUCache(2)
+c.put("a", 1)
+c.put("b", 2)
+c.get("a")
+c.put("c", 3)
+assert list(c.d) == ["a", "c"]
 ```
 
-For memoizing functions, `functools.lru_cache(maxsize=...)` is the production answer.
+For memoizing a pure function, `functools.lru_cache(maxsize=1024)` (or `functools.cache` when unbounded is fine) is the production answer. It is thread-safe in the sense that it will not corrupt itself, but two threads can still compute the same missing value at the same time.
 
-## Class design for extensibility
+## Key flows
 
-If asked for pluggable eviction (LRU, LFU, FIFO), split storage from policy:
+`get(1)` on a hit:
 
-```python
-from abc import ABC, abstractmethod
-
-
-class EvictionPolicy(ABC):
-    @abstractmethod
-    def accessed(self, key): ...
-    @abstractmethod
-    def evict(self): ...              # returns key to evict
-    @abstractmethod
-    def removed(self, key): ...
-
-
-class Cache:
-    def __init__(self, capacity: int, policy: EvictionPolicy):
-        self.cap, self.policy, self.store = capacity, policy, {}
-
-    def get(self, key):
-        if key in self.store:
-            self.policy.accessed(key)
-            return self.store[key]
-        return None
-
-    def put(self, key, val):
-        if key not in self.store and len(self.store) == self.cap:
-            del self.store[self.policy.evict()]
-        self.store[key] = val
-        self.policy.accessed(key)
+```text
+caller       LRUCache          _map            linked list
+  | get(1)       |               |                  |
+  |------------->| lock          |                  |
+  |              |--lookup 1---->|                  |
+  |              |<---node-------|                  |
+  |              |--unlink(node)------------------->|
+  |              |--push_front(node)--------------->| node is MRU
+  |<---- val ----| unlock        |                  |
 ```
 
-Pattern: **strategy** for eviction policy.
+`put(3, "c")` when full:
 
-## Pitfalls
+```text
+caller       LRUCache          _map            linked list
+  | put(3)       |               |                  |
+  |------------->| lock; 3 absent, len == capacity  |
+  |              |--lru = tail.prev---------------->|
+  |              |--unlink(lru)-------------------->|
+  |              |--del _map[lru.key]->|            |
+  |              |--_map[3] = node---->|            |
+  |              |--push_front(node)--------------->|
+  |<-------------| unlock        |                  |
+```
 
-- Forgetting to store `key` in the node, so you cannot delete from the map on eviction.
-- Not moving the node on `put` of an existing key.
-- Evicting before checking whether the key already exists (evicts needlessly).
-- Locking only `put`; `get` also rewires pointers.
-- Off-by-one: evict when `len == cap` before inserting, or when `len > cap` after.
+## Edge cases
 
-## Extensions interviewers ask
+- Updating an existing key must not evict anything, even when full: check membership first.
+- The node must store its key, or eviction cannot remove the dict entry.
+- `capacity <= 0` is rejected at construction.
+- A cached `None` is indistinguishable from a miss when `default=None`; pass a sentinel default if `None` is a legal value.
+- Evict when `len == capacity` before inserting (or when `len > capacity` after). Mixing the two is an off-by-one.
 
-- **TTL:** store `expires_at` in the node; check on `get` (lazy expiry) plus optional background sweep.
-- **LFU:** `key → node` plus `freq → doubly linked list`, track `min_freq`; all `O(1)`.
-- **Higher concurrency:** shard into N caches by `hash(key) % N`, each with its own lock.
-- **Distributed:** Redis with `maxmemory-policy allkeys-lru` (approximate LRU via sampling).
-- **Write-through / write-back:** cache sits in front of a slow store; on evict, flush dirty entries.
+## Production follow-ups
+
+**Is it thread-safe, and why not a read-write lock?** Every operation holds one lock, because even `get` rewires pointers; a read-write lock (Java `ReentrantReadWriteLock`) gives no benefit when all calls write. The GIL makes single bytecodes atomic, not the four pointer assignments in `_unlink` + `_push_front`. For more throughput, shard: N independent caches selected by `hash(key) % N`, each with its own lock (Java's old `ConcurrentHashMap` segments). Caffeine (Java) goes further: it records reads in a buffer and applies the reordering in batches. See [Read-write lock cache]({{ '/lld/read-write-lock-cache/' | relative_url }}) for when an RW lock does pay off.
+
+**What happens on restart?** The cache starts cold and the backing store takes the full load. Either accept a warm-up period, or snapshot the hottest N keys on shutdown and preload them on start. Protect the store during warm-up with request coalescing.
+
+**How do you avoid a stampede when many threads miss the same key?** Add `get_or_load(key, loader)` with single-flight: the first caller loads while others wait on a per-key `Future` or `Event`. Loads must be idempotent because a failed load is retried by the next caller.
+
+**How do you add LFU or FIFO without editing the cache?** Split storage from policy: an `EvictionPolicy` with `on_access(key)`, `on_insert(key)`, `on_remove(key)` and `victim()`. LRU is the list above; LFU keeps `freq -> doubly linked list` plus `min_freq`, all `O(1)`.
+
+**What breaks at 10× size or across machines?** Counting entries stops bounding memory when values vary in size: track bytes and evict until under budget. Across machines, use Redis with `maxmemory-policy allkeys-lru`; it approximates LRU by sampling a few keys rather than keeping a global list. Shard keys with consistent hashing so adding a node moves only `1/N` of keys.
+
+**What would you measure?** Hit ratio (the number that justifies the cache), evictions per second (high means the cache is too small), size, and load latency on misses. A sudden hit-ratio drop after a deploy usually means a key format changed.
+
+## Interview follow-ups
+
+- **Why a doubly linked list and not a singly linked one?** Unlinking a node in `O(1)` needs its predecessor; only the doubly linked list has it.
+- **Why store the key in the node?** On eviction you reach the node from the list tail and must delete its dict entry.
+- **How would you add TTL?** Store `expires_at` per entry, check on `get` (lazy), and sweep with a min-heap of expiries. Full design in [Design a cache with expiry (TTL)]({{ '/lld/ttl-cache/' | relative_url }}).
+- **LRU or LFU?** LRU adapts quickly to changing access patterns but a single full scan flushes it. LFU keeps long-term hot keys but holds stale popularity; real systems use hybrids such as W-TinyLFU.
