@@ -9,11 +9,15 @@ layout: base
   <aside class="n-side" aria-label="{{ s.title }} notes">
     <details class="n-toc" open>
       <summary><a href="{{ '/' | append: page.section | append: '/' | relative_url }}">{{ s.title }}</a></summary>
+      {% assign groups = notes | group_by: "phase" %}
+      {% for g in groups %}
+      {% if g.name != "" %}<p class="n-toc-group">{{ g.name }}</p>{% endif %}
       <ol>
-        {% for n in notes %}
+        {% for n in g.items %}
         <li><a href="{{ n.url | relative_url }}"{% if n.url == page.url %} aria-current="page"{% endif %}>{{ n.title }}</a></li>
         {% endfor %}
       </ol>
+      {% endfor %}
     </details>
   </aside>
 

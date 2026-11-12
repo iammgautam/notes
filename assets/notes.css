@@ -147,3 +147,13 @@
 @media (max-width: 560px) {
   .nav li:nth-child(2), .nav li:nth-child(3) { display: list-item; }
 }
+
+/* Phase groups (sections whose notes set `phase:` in front matter) */
+.n-phase { margin: var(--sp-12) 0 var(--sp-3); }
+.n-intro + .n-phase, .n-head + .n-phase { margin-top: var(--sp-6); }
+.n-toc-group {
+  margin-top: var(--sp-4); padding-left: var(--sp-3);
+  font: 500 10px/1.4 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+.n-toc-group + ol { margin-top: var(--sp-1); }

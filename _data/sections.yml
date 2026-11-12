@@ -7,7 +7,7 @@
 - id: lld
   title: Low-Level Design
   group: core
-  blurb: SOLID, design patterns and worked object-oriented designs.
+  blurb: OOP, SOLID, patterns, concurrency in Python and 27 worked designs with production follow-ups.
 - id: hld
   title: High-Level Design
   group: core

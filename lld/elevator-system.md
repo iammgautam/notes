@@ -1,38 +1,90 @@
 ---
 title: Design an elevator system
 section: lld
-order: 12
-summary: Multi-car elevator controller with elevator state, the SCAN/LOOK algorithm, pluggable dispatch strategies, and a thread-safe request flow.
+order: 23
+phase: "Phase 5 · Intermediate"
+summary: Multi-car elevator controller with State classes per car, LOOK scheduling, swappable dispatch strategies, and thread-safe hall and car calls.
 ---
 
 ## Requirements
 
-- Building with `N` floors and `M` elevators.
-- **External requests:** hall button on a floor with direction (up/down).
-- **Internal requests:** destination button inside a car.
-- Dispatcher assigns each hall call to one elevator.
-- Each elevator serves its stops efficiently (don't zigzag).
-- Capacity / weight limit, door open/close, maintenance mode.
-- Out of scope: real hardware, display UI.
+Clarifying questions to ask first:
 
-## Entities
+- How many floors and cars? (N floors, M cars, one controller per building.)
+- Do hall buttons carry a direction? (Yes, up or down. Car buttons carry only a floor.)
+- What do we optimize: average wait, travel, energy? (Average wait, with no starvation.)
+- Door timing, capacity, fire mode? (Doors stay open one tick; the rest are extensions.)
 
-| Entity | Responsibility |
-|--------|----------------|
-| `Direction` | `UP`, `DOWN`, `IDLE` |
-| `ElevatorState` | `MOVING`, `STOPPED`, `DOORS_OPEN`, `MAINTENANCE` |
-| `Request` | Floor + direction (hall) or floor only (car) |
-| `Elevator` | Current floor, direction, state, up/down stop sets, `step()` |
-| `DispatchStrategy` | Choose an elevator for a hall call |
-| `ElevatorController` | Receives requests, dispatches, ticks elevators |
+**Functional**
 
-## Class sketch
+- External (hall) request: floor plus direction. The controller assigns exactly one car.
+- Internal (car) request: destination floor for that car.
+- Each car serves stops in LOOK order: keep going while stops remain ahead, then reverse.
+- Car states: idle, moving, doors open, maintenance. A car in maintenance takes no hall calls.
+- Dispatch policy is swappable.
+
+**Non-functional**
+
+- Buttons are pressed from many threads while a ticker thread moves the cars.
+- No request is lost; no car runs past the last floor.
+- Any stop is served within one sweep up and one sweep down.
+
+**Out of scope:** hardware drivers, weight sensors, displays, destination dispatch.
+
+## Entities and relationships
+
+```text
++--------------------------------+      +----------------------------+
+| Controller                     | uses | DispatchStrategy (ABC)     |
+| floors, cars: list[Elevator]   |----->| pick(cars, floor, dir)     |
+| hall_call(floor, dir) -> id    |      +----------------------------+
+| car_call(car_id, floor)        |        ^ is-a: NearestCar, LookCost
+| out_of_service(car_id)         |
+| tick()                         |
++--------------------------------+
+        | has 1..*
+        v
++--------------------------------+ has  +----------------------------+
+| Elevator                       |----->| State (ABC)                |
+| id, floor, direction           |      | accepts_hall_calls: bool   |
+| up: set[int], down: set[int]   |      | tick(car)                  |
+| add_stop(floor, dir)           |      +----------------------------+
+| should_stop(), arrive()        |        ^ is-a: Idle, Moving,
+| next_direction()  # LOOK       |        |       DoorsOpen, Maintenance
++--------------------------------+
+        | uses
+        v
+  Direction (enum: UP, DOWN, IDLE)
+```
+
+A car keeps two stop sets. `up` holds stops to serve while going up (hall-up calls and car calls above it), `down` the rest. A car going up skips a hall-down call on its way and serves it on the way back, which is what the person waiting expects.
+
+## Patterns and why
+
+| Pattern | Where | Why |
+|---|---|---|
+| State | `Idle`, `Moving`, `DoorsOpen`, `Maintenance` | Each state's tick lives in one class; no `if state == ...` chains to edit when fire mode arrives |
+| Strategy | `DispatchStrategy` | Nearest car vs LOOK cost vs peak-hour rules swap at runtime; the controller never changes |
+| Facade | `Controller` | Buttons and the ticker talk to one object that owns the lock |
+
+### Scheduling choices
+
+| Algorithm | Behavior | Verdict |
+|---|---|---|
+| FCFS | Serve in arrival order | Zigzags, long waits |
+| SSTF / nearest | Closest stop next | Starves far floors |
+| SCAN | Sweep to the end floor, reverse | Fair, wastes travel at the ends |
+| LOOK | Sweep to the last stop, reverse | Standard answer, used per car here |
+
+Two separate decisions: **which car** gets a hall call (dispatch strategy) and **in what order a car serves its stops** (LOOK, built into the states).
+
+## Code
 
 ```python
-import heapq
+import random
 import threading
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 
 
@@ -42,148 +94,265 @@ class Direction(Enum):
     IDLE = 0
 
 
-class State(Enum):
-    MOVING = "moving"
-    STOPPED = "stopped"
-    MAINTENANCE = "maintenance"
+class State(ABC):
+    accepts_hall_calls = True
+
+    @abstractmethod
+    def tick(self, car: "Elevator") -> None: ...
 
 
-@dataclass(frozen=True)
-class Request:
-    floor: int
-    direction: Direction = Direction.IDLE   # IDLE for in-car requests
+class Idle(State):
+    def tick(self, car):
+        stops = car.up | car.down
+        if car.floor in stops:
+            car.arrive()
+        elif stops:
+            target = min(stops, key=lambda f: abs(f - car.floor))
+            car.direction = Direction.UP if target > car.floor else Direction.DOWN
+            car.state = Moving()
+
+
+class Moving(State):
+    def tick(self, car):
+        car.floor += car.direction.value
+        if car.should_stop():
+            car.arrive()
+
+
+class DoorsOpen(State):
+    def tick(self, car):  # doors close after one tick
+        car.direction = car.next_direction()
+        car.state = Idle() if car.direction is Direction.IDLE else Moving()
+
+
+class Maintenance(State):
+    accepts_hall_calls = False
+
+    def tick(self, car):
+        pass
 
 
 class Elevator:
-    def __init__(self, id_: int, capacity: int = 8):
-        self.id, self.capacity = id_, capacity
-        self.floor, self.direction, self.state = 0, Direction.IDLE, State.STOPPED
-        self.up: list[int] = []      # min-heap of floors above
-        self.down: list[int] = []    # max-heap (negated) of floors below
-        self.lock = threading.Lock()
+    def __init__(self, id_: int, floor: int = 0):
+        self.id, self.floor = id_, floor
+        self.direction = Direction.IDLE
+        self.state: State = Idle()
+        self.up: set[int] = set()    # serve while moving up
+        self.down: set[int] = set()  # serve while moving down
+        self.served: list[int] = []
 
-    def add_stop(self, floor: int) -> None:
-        with self.lock:
-            if floor > self.floor and floor not in self.up:
-                heapq.heappush(self.up, floor)
-            elif floor < self.floor and -floor not in self.down:
-                heapq.heappush(self.down, -floor)
-            if self.direction is Direction.IDLE and floor != self.floor:
-                self.direction = Direction.UP if floor > self.floor else Direction.DOWN
+    def add_stop(self, floor: int, direction: Direction) -> None:
+        if direction is Direction.IDLE:  # car call: side depends on position
+            direction = Direction.UP if floor >= self.floor else Direction.DOWN
+        (self.up if direction is Direction.UP else self.down).add(floor)
 
-    def step(self) -> None:
-        """Advance one floor using LOOK: keep going while stops remain ahead."""
-        with self.lock:
-            if self.state is State.MAINTENANCE:
-                return
-            if self.direction is Direction.UP and not self.up:
-                self.direction = Direction.DOWN if self.down else Direction.IDLE
-            elif self.direction is Direction.DOWN and not self.down:
-                self.direction = Direction.UP if self.up else Direction.IDLE
-            if self.direction is Direction.IDLE:
-                self.state = State.STOPPED
-                return
-            self.floor += self.direction.value
-            self.state = State.MOVING
-            if self.up and self.up[0] == self.floor:
-                heapq.heappop(self.up)
-                self.state = State.STOPPED          # open doors
-            elif self.down and -self.down[0] == self.floor:
-                heapq.heappop(self.down)
-                self.state = State.STOPPED
+    def _ahead(self, d: Direction) -> bool:
+        return any((f - self.floor) * d.value > 0 for f in self.up | self.down)
 
-    def pending(self) -> int:
-        return len(self.up) + len(self.down)
-```
+    def _sets(self) -> tuple[set[int], set[int]]:
+        d = self.direction
+        return (self.up, self.down) if d is Direction.UP else (self.down, self.up)
 
-## Scheduling strategies
+    def should_stop(self) -> bool:
+        here, other = self._sets()
+        # Stop for calls in our direction, or for anything at the turnaround floor.
+        return self.floor in here or (self.floor in other and not self._ahead(self.direction))
 
-| Algorithm | Behavior | Notes |
-|-----------|----------|-------|
-| FCFS | Serve requests in arrival order | Simple, lots of zigzag |
-| SSTF | Nearest stop next | Starvation of far floors |
-| SCAN | Go end to end, serve along the way | Fair, wasteful at ends |
-| LOOK | Like SCAN but reverse at last request | Standard answer |
+    def arrive(self) -> None:
+        here, other = self._sets()
+        here.discard(self.floor)
+        if self.direction is Direction.IDLE or not self._ahead(self.direction):
+            other.discard(self.floor)
+        self.served.append(self.floor)
+        self.state = DoorsOpen()
 
-Within one car, use **LOOK** (above). Across cars, the **dispatcher** decides.
+    def next_direction(self) -> Direction:  # LOOK: keep going, else reverse
+        d = self.direction
+        order = [Direction.UP, Direction.DOWN] if d is Direction.IDLE else [d, Direction(-d.value)]
+        return next((x for x in order if self._ahead(x)), Direction.IDLE)
 
-```python
+
 class DispatchStrategy(ABC):
     @abstractmethod
-    def pick(self, elevators: list[Elevator], req: Request) -> Elevator: ...
+    def pick(self, cars: list[Elevator], floor: int, direction: Direction) -> Elevator: ...
 
 
-class NearestSuitable(DispatchStrategy):
-    """Prefer cars moving toward the floor in the same direction, else idle, else least busy."""
-
-    def cost(self, e: Elevator, r: Request) -> int:
-        dist = abs(e.floor - r.floor)
-        if e.direction is Direction.IDLE:
-            return dist
-        heading_to = (r.floor - e.floor) * e.direction.value >= 0
-        if heading_to and e.direction is r.direction:
-            return dist
-        return 1_000 + dist + e.pending()       # penalize wrong direction
-
-    def pick(self, elevators, req):
-        ok = [e for e in elevators if e.state is not State.MAINTENANCE]
-        return min(ok, key=lambda e: self.cost(e, req))
+class NearestCar(DispatchStrategy):
+    def pick(self, cars, floor, direction):
+        return min(cars, key=lambda c: abs(c.floor - floor))
 
 
-class LeastLoaded(DispatchStrategy):
-    def pick(self, elevators, req):
-        return min(elevators, key=Elevator.pending)
+class LookCost(DispatchStrategy):
+    """Floors a car travels under LOOK before it reaches the call."""
+
+    def cost(self, c: Elevator, floor: int, direction: Direction) -> int:
+        d = c.direction
+        if d is Direction.IDLE:
+            return abs(c.floor - floor)
+        if direction is d and (floor - c.floor) * d.value >= 0:
+            return abs(floor - c.floor)  # on its way
+        turn = max(c.up | c.down | {c.floor}, key=lambda f: (f - c.floor) * d.value)
+        return abs(turn - c.floor) + abs(turn - floor)
+
+    def pick(self, cars, floor, direction):
+        return min(cars, key=lambda c: self.cost(c, floor, direction))
+
+
+class Controller:
+    def __init__(self, floors: int, cars: list[Elevator], strategy: DispatchStrategy):
+        self.floors, self.cars, self.strategy = floors, cars, strategy
+        # Simplification: one lock for buttons and ticks; a request queue if dispatch gets slow
+        self._lock = threading.Lock()
+
+    def _check(self, floor: int) -> None:
+        if not 0 <= floor < self.floors:
+            raise ValueError(f"no floor {floor}")
+
+    def hall_call(self, floor: int, direction: Direction) -> int:
+        """External request. Returns the id of the car that will come."""
+        self._check(floor)
+        if direction is Direction.IDLE or floor + direction.value not in range(self.floors):
+            raise ValueError("bad direction")
+        with self._lock:
+            ok = [c for c in self.cars if c.state.accepts_hall_calls]
+            for c in ok:  # pressed twice: same car
+                if floor in (c.up if direction is Direction.UP else c.down):
+                    return c.id
+            if not ok:
+                raise RuntimeError("no car in service")
+            car = self.strategy.pick(ok, floor, direction)
+            car.add_stop(floor, direction)
+            return car.id
+
+    def car_call(self, car_id: int, floor: int) -> None:
+        """Internal request from a button inside the car."""
+        self._check(floor)
+        with self._lock:
+            self.cars[car_id].add_stop(floor, Direction.IDLE)
+
+    def out_of_service(self, car_id: int) -> None:
+        with self._lock:
+            self.cars[car_id].state = Maintenance()
+
+    def tick(self) -> None:
+        with self._lock:
+            for c in self.cars:
+                c.state.tick(c)
+
+
+if __name__ == "__main__":
+    def run(ctl, ticks):
+        for _ in range(ticks):
+            ctl.tick()
+            assert all(0 <= c.floor < ctl.floors for c in ctl.cars)
+
+    # LOOK: a DOWN call at 3 is skipped on the way up and served on the way down.
+    car = Elevator(0)
+    ctl = Controller(10, [car], LookCost())
+    ctl.car_call(0, 7)
+    run(ctl, 2)  # Idle -> Moving, then floor 1
+    ctl.hall_call(3, Direction.DOWN)
+    ctl.car_call(0, 5)
+    run(ctl, 30)
+    assert car.served == [5, 7, 3], car.served
+    assert isinstance(car.state, Idle) and not (car.up or car.down)
+
+    # Nearest car picks A (1 floor away, heading down); LOOK cost picks idle B.
+    def setup(strategy):
+        ctl = Controller(10, [Elevator(0, floor=2), Elevator(1, floor=6)], strategy)
+        ctl.car_call(0, 0)
+        ctl.tick()
+        return ctl
+
+    assert setup(NearestCar()).hall_call(3, Direction.UP) == 0
+    assert setup(LookCost()).hall_call(3, Direction.UP) == 1
+
+    ctl = Controller(10, [Elevator(0), Elevator(1, floor=9)], NearestCar())
+    ctl.out_of_service(1)
+    assert ctl.hall_call(8, Direction.DOWN) == 0
+    for bad in [(10, Direction.UP), (9, Direction.UP), (0, Direction.DOWN)]:
+        try:
+            ctl.hall_call(*bad)
+            raise AssertionError(bad)
+        except ValueError:
+            pass
+
+    # Stress: 8 threads press random buttons while the main thread ticks.
+    ctl = Controller(20, [Elevator(i) for i in range(3)], LookCost())
+
+    def rider(seed):
+        rng, pressed = random.Random(seed), set()
+        for _ in range(300):
+            f = rng.randrange(20)
+            if rng.random() < 0.5:
+                ctl.hall_call(f, Direction.UP if f < 19 else Direction.DOWN)
+            else:
+                ctl.car_call(rng.randrange(3), f)
+            pressed.add(f)
+        return pressed
+
+    with ThreadPoolExecutor(8) as pool:
+        futures = [pool.submit(rider, s) for s in range(8)]
+        while not all(f.done() for f in futures):
+            run(ctl, 1)
+    run(ctl, 200)  # drain
+    pressed = set().union(*(f.result() for f in futures))
+    assert pressed <= set().union(*(c.served for c in ctl.cars))
+    assert all(not c.up and not c.down for c in ctl.cars)
+    print("elevator ok")
 ```
 
-## Controller and flows
+## Key flows
 
-```python
-class ElevatorController:
-    def __init__(self, n_elevators: int, strategy: DispatchStrategy):
-        self.elevators = [Elevator(i) for i in range(n_elevators)]
-        self.strategy = strategy
+```text
+Button    Controller              DispatchStrategy        Elevator B
+  | hall_call(3, DOWN)                    |                     |
+  |-------->| lock                        |                     |
+  |         | already assigned? no        |                     |
+  |         | pick(in-service cars) ----->|                     |
+  |         |<------------ car B ---------|                     |
+  |         | add_stop(3, DOWN) -------------------------------->| down={3}
+  |<-- B ---| unlock                      |                     |
 
-    def hall_call(self, floor: int, direction: Direction) -> Elevator:
-        e = self.strategy.pick(self.elevators, Request(floor, direction))
-        e.add_stop(floor)
-        return e
-
-    def car_call(self, elevator_id: int, floor: int) -> None:
-        self.elevators[elevator_id].add_stop(floor)
-
-    def tick(self) -> None:               # called by a scheduler thread
-        for e in self.elevators:
-            e.step()
+Ticker    Controller              Elevator (state = Moving)
+  | tick()  |                           |
+  |-------->| lock; for each car ------>| floor += direction
+  |         |                           | should_stop()? -> arrive()
+  |         |                           |   remove stop, state = DoorsOpen
+  |         | unlock                    |
+  |         |   next tick: DoorsOpen -> next_direction() -> Moving/Idle
 ```
 
-- **Hall call:** controller → strategy picks car → `add_stop`.
-- **Car call:** goes straight to that car.
-- **Tick:** each car advances one floor, stops if it reached a stop.
+## Edge cases
 
-## Patterns used
+- Up call from the top floor or down call from the ground floor: rejected.
+- Same hall button pressed twice: the second press returns the car already assigned.
+- Car going up passes a down call: not served now, served on the way down or as the turnaround stop.
+- Car call for the floor the car is idle at: the doors open on the next tick.
+- No car in service: `RuntimeError` here; production queues the call and alerts.
+- Car sent to maintenance with pending stops: this sketch freezes them. Production adds a `Draining` state that finishes car calls and hands hall calls back to the controller.
+- Floor out of range: `ValueError` before any lock is taken.
 
-| Pattern | Where | Why |
-|---------|-------|-----|
-| Strategy | `DispatchStrategy` | Peak-hour vs normal dispatch, swap at runtime |
-| State | `State` enum (or state classes) | Behavior differs when moving, stopped, in maintenance |
-| Observer | Floor displays, hall lanterns | Subscribe to elevator position changes |
-| Command | `Request` objects | Queue, log, replay requests |
-| Singleton | Controller | One per building; inject it |
+## Production follow-ups
 
-For a richer state model, turn `State` into classes (`Idle`, `MovingUp`, `MovingDown`, `DoorsOpen`, `Maintenance`) each implementing `on_request()` and `on_tick()`. See [Behavioral patterns]({{ '/lld/behavioral-patterns/' | relative_url }}).
+**How is it thread-safe?** One lock covers dispatch and tick, so the strategy always sees consistent positions and the critical sections are microseconds. The alternative is a single controller thread consuming a `queue.Queue` of button events (Java's `BlockingQueue`), so car state has exactly one writer and needs no lock. See [Producer-consumer]({{ '/lld/producer-consumer/' | relative_url }}).
 
-## Concurrency
+**What happens on restart?** Car positions come from floor sensors, never from memory, so the controller rebuilds `floor` from hardware at boot. Hall lamps stay lit, and the panels re-send lit buttons; car calls can be persisted in a small local store or riders press again.
 
-- Requests arrive from many threads (buttons) while a ticker thread moves cars.
-- Each `Elevator` guards its stop heaps with its own lock; `step()` and `add_stop()` both take it.
-- Dispatcher reads car state without locks: a slightly stale view is fine, the decision is a heuristic.
-- Alternative: one `queue.Queue` of requests consumed by the controller thread (single writer, no locks on cars).
+**How are retries handled?** Presses are idempotent by construction: stops are sets, and the duplicate check returns the assigned car. A panel retrying over a flaky bus resends `(floor, direction)`, which is its own natural key.
 
-## Extensions interviewers ask
+**How do you add fire mode or a peak-hour policy?** Fire service is a new `State` that sends the car to the lobby and refuses calls. Morning-rush lobby parking is a new `DispatchStrategy`. Neither touches existing classes.
 
-- **Capacity:** track load; skip hall calls when full, the dispatcher reassigns.
-- **Emergency / fire mode:** all cars go to ground floor, ignore hall calls (a new state).
-- **VIP / service elevator:** filter in dispatch strategy.
-- **Destination dispatch:** riders enter target floor in the lobby; group riders by destination.
-- **Peak-hour strategy:** morning, park idle cars at lobby; evening, spread across floors.
-- **Door safety:** door sensor blocks transition from `DOORS_OPEN` to `MOVING`.
+**What breaks at 10× or across machines?** A building is small: under 100 floors and a few dozen cars, and `pick` is `O(cars)` per call. Large towers split into zones (low-rise and high-rise banks), each with its own controller. A fleet of buildings is independent controllers reporting to a central monitoring service; nothing needs cross-building locks.
+
+**What do you measure?** Wait time from press to doors opening (p50 and p95 per floor), ride time, trips per car for wear leveling, door-open duration, calls with no car in service. Log state transitions with car id and floor. A car in `Moving` whose floor stops changing is a sensor or motor fault alarm.
+
+**Can anyone starve?** LOOK serves any stop within one sweep each way. Nearest-car dispatch with heavy traffic near the lobby can keep sending cars away from the top floors; add the age of the call to the cost so old calls win.
+
+## Interview follow-ups
+
+- **SCAN vs LOOK?** SCAN always travels to the end floor; LOOK reverses at the last stop. Both bound wait time, LOOK travels less.
+- **Why State classes instead of an enum?** With an enum every method branches on it, and fire mode edits each branch. With classes it is one new class.
+- **Capacity?** Track load; when full, `Moving` skips hall stops (not car calls), and the controller reassigns those calls to another car.
+- **Destination dispatch?** Riders enter the target floor in the lobby, so the hall call carries a destination and the cost function groups riders going to nearby floors.
+- **How do you test without real time?** `tick()` is the clock. Tests drive ticks deterministically, as the demo does.

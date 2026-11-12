@@ -2,88 +2,92 @@
 title: How to approach an LLD interview
 section: lld
 order: 1
-summary: An 8-step script for machine-coding and LLD rounds, with a 45-minute time budget and what interviewers actually score.
+phase: "Start here"
+summary: A minute-by-minute plan for 45–60 minute LLD and machine-coding rounds, what interviewers score, and the mistakes that sink candidates.
 ---
 
-LLD rounds test whether you can turn a fuzzy problem into clean, extensible classes and working core code. The design matters more than finishing every feature.
+LLD and machine-coding rounds test whether you can turn a vague prompt into classes with clear jobs, write working code for the core flows, and keep the design open to change. A small core that runs beats a complete design that doesn't.
 
-## What gets scored
+| Round | What you produce | Weighted toward |
+|---|---|---|
+| LLD discussion | Class diagram, key methods, some code | Modeling, patterns, trade-offs |
+| Machine coding | Runnable code for the core flows | Correctness, code quality, a working demo |
 
-- **Requirement handling**: you scope before you code.
-- **Modeling**: right entities, right responsibilities, sensible relationships.
-- **Code quality**: readable, small classes, SOLID, no god objects.
-- **Extensibility**: new requirement = new class, not edits everywhere.
-- **Correctness under concurrency** when the problem has shared state (booking, parking, inventory).
+## What interviewers score
 
-## The 8 steps
+| Signal | What they look for | Red flag |
+|---|---|---|
+| Responsibilities | Each class has one job; behavior sits next to the data it changes | A `System` god class; callers poking fields (`spot.vehicle = v`) |
+| Extensibility | A new type or rule is a new class | `if kind == "car"` repeated in three places |
+| Correctness | Invariants enforced, failure paths handled, shared state safe | Double booking, negative balance, float money |
+| Code quality | Clear names, small methods, enums, type hints | Getter/setter boilerplate, magic strings |
+| Communication | Thinks aloud, states trade-offs, uses hints | 20 minutes of silent typing |
 
-| # | Step | Output |
-|---|------|--------|
-| 1 | Clarify | Scope list: in / out, scale, single vs multi-threaded |
-| 2 | Use cases | 4–6 verbs: `park`, `unpark`, `pay`, `search` |
-| 3 | Entities | Nouns from use cases become candidate classes |
-| 4 | Relationships | has-a / is-a, cardinality (1:N), ownership |
-| 5 | Class design | Attributes + methods per class, enums, interfaces |
-| 6 | Patterns | Only where a variation point exists |
-| 7 | Code core flows | 1–2 end-to-end flows, runnable |
-| 8 | Extensibility | Walk through "what if…" changes |
+## The plan
+
+| Step | 45 min | 60 min | Output |
+|---|---|---|---|
+| 1. Clarify | 0–4 | 0–5 | In-scope / out-of-scope list |
+| 2. Use cases | 4–7 | 5–8 | 4–6 public method signatures |
+| 3. Entities | 7–10 | 8–12 | Classes and enums from the nouns |
+| 4. Class diagram | 10–15 | 12–18 | Boxes, relationships, key methods |
+| 5. Patterns | 15–17 | 18–21 | Each variation point named |
+| 6. Code core flows | 17–36 | 21–45 | Happy path plus one failure path |
+| 7. Test with a demo | 36–40 | 45–50 | `__main__` block with asserts |
+| 8. Production follow-ups | 40–45 | 50–60 | Concurrency, persistence, scale |
+
+> **Rule of thumb:** If you are not writing classes by minute 17, you are over-talking.
 
 ### 1. Clarify
 
-Ask, then write the answers down where the interviewer can see them.
-
-- Who are the actors? (user, admin, system)
-- What is explicitly out of scope? (payments, auth, UI, persistence)
-- In-memory or DB-backed? Usually in-memory with repository classes.
-- Concurrency: multiple users at once? This changes the design.
-- Any variation the interviewer hints at? ("pricing may change" = strategy)
+- **Actors**: who calls what (user, admin, a scheduler).
+- **Scope**: what is out (payments, auth, UI, persistence). Write the list where the interviewer can see it.
+- **Concurrency**: one user at a time, or many grabbing the same seat or spot?
+- **Variation hints**: "pricing may change" or "more vehicle types later" means a strategy or a factory.
 
 ### 2. Use cases
 
-Turn each actor's goal into a method signature early: `book(user, show, seats) -> Booking`. These become your public API.
+Turn each goal into a signature: `park(vehicle) -> Ticket`, `unpark(ticket_id) -> Receipt`. This is the public API and your contract with the interviewer.
 
 ### 3. Entities
 
-- Nouns → classes; adjectives with fixed values → enums (`VehicleType`, `SeatStatus`).
-- Drop nouns that are just attributes (a "price" is a field, not a class).
-- Separate **entities** (have identity: `Booking`) from **services** (do work: `BookingService`).
+- Nouns become candidate classes; fixed sets become `Enum` (`SpotType`, `BookingStatus`).
+- A noun that is only a value becomes a field (`price`) or a frozen dataclass (`Money`).
+- Separate **entities** (identity and state: `Booking`) from **services** (orchestrate a use case: `BookingService`).
 
-### 4. Relationships
+### 4. Class diagram
 
-- Composition (owns lifecycle): `ParkingLot` → `Floor` → `Spot`.
-- Association (references): `Booking` → `User`.
-- Inheritance only for true is-a with shared behavior; prefer composition.
+Boxes, arrows, multiplicity, only the methods from step 2. See [UML for interviews]({{ '/lld/uml-for-interviews/' | relative_url }}) for the notation.
 
-### 5. Class design
+### 5. Patterns
 
-- Data classes for entities, ABCs for variation points, a service/manager per use-case group.
-- Keep state changes inside the owning class (`spot.occupy(vehicle)`, not `spot.vehicle = v` from outside).
+Only at real variation points. One sentence each: "Pricing varies by vehicle type, so `PricingStrategy` is a strategy."
 
-### 6. Patterns
+### 6. Code core flows
 
-Name the pattern and the reason in one sentence: "Pricing varies by vehicle type and time, so `PricingStrategy` is a strategy." Never force one.
+- Enums and entities first, then the service, then one flow end to end.
+- In-memory dicts behind repository classes. Behavior methods, not setters.
+- Validate input and raise a specific exception on the failure path.
 
-### 7. Code core flows
+### 7. Test with a demo
 
-Write the happy path end to end, then add validation and one failure path. Skip getters/setters boilerplate.
+A `__main__` block that runs the main flow and asserts the results, including one failure. Running it in front of the interviewer is the strongest correctness signal you have.
 
-### 8. Extensibility
+### 8. Production follow-ups
 
-Proactively say: "To add EV charging spots, I add a `SpotType.EV` and a new pricing strategy; nothing else changes."
+Have one-line answers ready for thread safety (lock the check-then-act), persistence (repository interface, DB unique constraints), idempotency (request IDs), extensibility (new class, no edits), scale (what moves to a DB or queue) and observability (what you log and measure). Every case study in this section ends with these.
 
-## 45-minute budget
+## Most problems reduce to Strategy + Factory + Composition
 
-| Minutes | Activity |
-|---------|----------|
-| 0–5 | Clarify and list use cases |
-| 5–12 | Entities, relationships, enums |
-| 12–20 | Class diagram / skeleton with method signatures |
-| 20–38 | Code core flows |
-| 38–45 | Concurrency, extensions, Q&A |
+| Piece | Job | Typical spot |
+|---|---|---|
+| Composition | An aggregate owns its parts | `ParkingLot` → `Floor` → `Spot`; `Order` → `OrderItem` |
+| Strategy | A swappable rule | Pricing, spot allocation, split type, rate-limit algorithm |
+| Factory | Build the right subtype from input | Vehicle from a type string, payment method, notification channel |
 
-> **Rule of thumb:** If you have not started writing classes by minute 15, you are over-talking.
+Add **State** when an entity has a lifecycle with different rules per state (vending machine, elevator, order) and **Observer** when other parts react to events (notifications, display boards). More in [Patterns in practice]({{ '/lld/patterns-in-practice/' | relative_url }}).
 
-## Template skeleton
+All three in one skeleton:
 
 ```python
 from abc import ABC, abstractmethod
@@ -91,45 +95,84 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
-class Status(Enum):
-    AVAILABLE = "available"
-    BOOKED = "booked"
+class VehicleType(Enum):
+    BIKE = "bike"
+    CAR = "car"
 
 
 @dataclass
-class Entity:
+class Spot:                         # entity owns its state change
     id: str
-    status: Status = Status.AVAILABLE
+    type: VehicleType
+    plate: str | None = None
+
+    def occupy(self, plate: str) -> None:
+        if self.plate is not None:
+            raise ValueError(f"spot {self.id} is taken")
+        self.plate = plate
 
 
-class Strategy(ABC):            # the variation point
+class PricingStrategy(ABC):         # strategy: the variation point
     @abstractmethod
-    def apply(self, entity: Entity) -> int: ...
+    def price(self, hours: int) -> int: ...
 
 
-class Repository:               # in-memory storage, swappable for DB
-    def __init__(self):
-        self._items: dict[str, Entity] = {}
+class HourlyRate(PricingStrategy):
+    def __init__(self, per_hour: int):
+        self.per_hour = per_hour
 
-    def add(self, e: Entity) -> None:
-        self._items[e.id] = e
-
-    def get(self, id_: str) -> Entity:
-        return self._items[id_]
+    def price(self, hours: int) -> int:
+        return self.per_hour * max(hours, 1)
 
 
-class Service:                  # orchestrates a use case
-    def __init__(self, repo: Repository, strategy: Strategy):
-        self.repo, self.strategy = repo, strategy
+PRICING = {
+    VehicleType.BIKE: HourlyRate(10),
+    VehicleType.CAR: HourlyRate(30),
+}
+
+
+def pricing_for(vt: VehicleType) -> PricingStrategy:  # factory: a lookup
+    return PRICING[vt]
+
+
+@dataclass
+class ParkingLot:                   # composition: owns its spots
+    spots: list[Spot] = field(default_factory=list)
+
+    def park(self, plate: str, vt: VehicleType) -> Spot:
+        for spot in self.spots:
+            if spot.type is vt and spot.plate is None:
+                spot.occupy(plate)
+                return spot
+        raise LookupError(f"no free {vt.value} spot")
+
+
+if __name__ == "__main__":
+    lot = ParkingLot([Spot("B1", VehicleType.BIKE),
+                      Spot("C1", VehicleType.CAR)])
+    assert lot.park("KA01", VehicleType.CAR).id == "C1"
+    assert pricing_for(VehicleType.CAR).price(2) == 60
+    try:
+        lot.park("KA02", VehicleType.CAR)
+        raise AssertionError("expected LookupError")
+    except LookupError:
+        pass
 ```
 
-## Pitfalls
+## Common mistakes
 
-- Jumping into code before agreeing scope.
-- One giant `System` class doing everything.
-- Inheritance trees five levels deep (`Car(FourWheeler(Vehicle))`).
+- Coding before scope is agreed, or drawing for 20 minutes and never coding.
+- One god class (`ParkingSystem`) holding every method and every dict.
+- Type switches spread across the code instead of polymorphism or a lookup table.
+- Public mutable state changed from outside the owning class.
+- Deep inheritance for reuse (`ElectricSUV(SUV(Car(Vehicle)))`).
 - Patterns for show: a factory with one product, an observer with one listener.
-- Ignoring concurrency when two users can grab the same resource.
-- Leaving no time for the extensibility discussion.
+- `float` for money; no thought for two users grabbing the same resource.
+- No demo, so nobody knows whether the code works.
 
-> **Interview tip:** Narrate trade-offs as you go: "I'm keeping this in memory; in production this repository would be a Django model with a unique constraint."
+## Interview questions
+
+- **"Why not put this in one class?"** Each class should have one reason to change. Pricing changes for business reasons, allocation for layout reasons; splitting them means one change touches one class.
+- **"How would you add a new vehicle type?"** Add an enum value and a pricing entry. `ParkingLot` does not change. If you would have to edit an `if/elif`, say so and refactor it into a lookup.
+- **"How do you know it works?"** Run the demo. Assert the happy path and at least one rejection (full lot, double booking, insufficient funds).
+- **"You have 10 minutes left."** Stop adding features. Make the core flow run, then talk through concurrency and persistence instead of coding them.
