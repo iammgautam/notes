@@ -30,6 +30,7 @@ summary: Find a boundary in a monotonic space in O(log n). Templates and the off
 - `order`: integer, controls position in the section (1 = first). Read order should go basics → advanced → case studies.
 - `summary`: one sentence, ≤ 160 characters, says what you will know after reading. Shown on the section index.
 - Quote the value if it contains `: ` or starts with a special character.
+- Optional `phase`: groups notes under a heading in the section index and sidebar (used by `lld`). Notes with the same phase must have consecutive `order` values.
 
 ## Body structure
 

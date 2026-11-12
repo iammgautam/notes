@@ -13,11 +13,14 @@ layout: base
   {% if content != "" %}<div class="prose n-intro">{{ content }}</div>{% endif %}
 
   {% if notes.size > 0 %}
+  {% assign groups = notes | group_by: "phase" %}
+  {% for g in groups %}
+  {% if g.name != "" %}<h2 class="n-phase overline">{{ g.name }}</h2>{% endif %}
   <ol class="n-index">
-    {% for n in notes %}
+    {% for n in g.items %}
     <li>
       <a href="{{ n.url | relative_url }}">
-        <span class="n-index-num" aria-hidden="true">{{ forloop.index | prepend: '00' | slice: -2, 2 }}</span>
+        <span class="n-index-num" aria-hidden="true">{{ n.order | prepend: '00' | slice: -2, 2 }}</span>
         <span class="n-index-body">
           <span class="n-index-title">{{ n.title }}</span>
           {% if n.summary %}<span class="n-index-sum">{{ n.summary }}</span>{% endif %}
@@ -26,6 +29,7 @@ layout: base
     </li>
     {% endfor %}
   </ol>
+  {% endfor %}
   {% else %}
   <p class="n-empty">No notes in this section yet.</p>
   {% endif %}
