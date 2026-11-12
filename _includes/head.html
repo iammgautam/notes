@@ -13,3 +13,5 @@
 <link rel="stylesheet" href="/style.css" />
 <link rel="stylesheet" href="{{ '/assets/notes.css' | relative_url }}" />
 <script>try { const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
+{% if page.layout == "note" or page.layout == "post" %}<link rel="alternate" type="text/markdown" href="{{ page.url | relative_url }}index.md" />{% endif %}
+<link rel="alternate" type="text/plain" title="llms.txt" href="{{ '/llms.txt' | relative_url }}" />

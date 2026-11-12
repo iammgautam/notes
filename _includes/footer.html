@@ -1,6 +1,6 @@
 <footer class="wrap site-footer">
   <p>© {{ site.time | date: '%Y' }} {{ site.author }}</p>
-  <p class="mono"><a href="https://github.com/iammgautam/notes">Source on GitHub</a></p>
+  <p class="mono"><a href="{{ '/llms.txt' | relative_url }}">llms.txt</a> · <a href="https://github.com/iammgautam/notes">Source on GitHub</a></p>
 </footer>
 <script>
   // Theme toggle, shared behaviour with the portfolio.
@@ -12,6 +12,50 @@
   });
   // Section list starts collapsed on small screens so the note comes first.
   if (matchMedia('(max-width: 999px)').matches) document.querySelector('.n-toc')?.removeAttribute('open');
+  // Page actions: copy Markdown, open in ChatGPT / Claude.
+  document.querySelectorAll('[data-page-actions]').forEach((box) => {
+    const mdUrl = new URL('index.md', location.href.split('#')[0].replace(/[^/]*$/, '')).href;
+    const toggle = box.querySelector('[data-pa-toggle]');
+    const menu = box.querySelector('[data-pa-menu]');
+    const label = box.querySelector('[data-pa-label]');
+    const status = box.querySelector('[data-pa-status]');
+    const prompt = `Read ${mdUrl} so I can ask questions about it. Help me understand it and prepare for interviews.`;
+    box.querySelectorAll('[data-pa-open]').forEach((a) => { a.href = a.dataset.paOpen + encodeURIComponent(prompt); });
+    box.querySelector('a[href="index.md"]').href = mdUrl;
+
+    const setOpen = (open) => {
+      menu.hidden = !open;
+      toggle.setAttribute('aria-expanded', String(open));
+      if (open) menu.querySelector('[role="menuitem"]').focus();
+    };
+    toggle.addEventListener('click', () => setOpen(menu.hidden));
+    document.addEventListener('click', (e) => { if (!box.contains(e.target)) setOpen(false); });
+    box.addEventListener('keydown', (e) => {
+      const items = [...menu.querySelectorAll('[role="menuitem"]')];
+      const i = items.indexOf(document.activeElement);
+      if (e.key === 'Escape' && !menu.hidden) { setOpen(false); toggle.focus(); }
+      if (e.key === 'ArrowDown' && i > -1) { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+      if (e.key === 'ArrowUp' && i > -1) { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+    });
+    menu.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => setOpen(false)));
+
+    let t;
+    box.querySelectorAll('[data-pa-copy]').forEach((btn) => btn.addEventListener('click', async () => {
+      setOpen(false);
+      try {
+        const res = await fetch(mdUrl);
+        if (!res.ok) throw new Error(res.status);
+        await navigator.clipboard.writeText(await res.text());
+        label.textContent = 'Copied';
+        status.textContent = 'Page copied as Markdown';
+      } catch {
+        label.textContent = "Couldn't copy";
+        status.textContent = "Couldn't copy the page. Use View as Markdown instead.";
+      }
+      clearTimeout(t);
+      t = setTimeout(() => { label.textContent = 'Copy page'; status.textContent = ''; }, 2000);
+    }));
+  });
   const h = document.querySelector('.site-header');
   const s = () => h.classList.toggle('is-scrolled', scrollY > 8);
   addEventListener('scroll', s, { passive: true }); s();

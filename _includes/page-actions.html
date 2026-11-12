@@ -1,0 +1,24 @@
+<div class="page-actions" data-page-actions>
+  <button type="button" class="pa-copy" data-pa-copy>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg>
+    <span data-pa-label>Copy page</span>
+  </button>
+  <button type="button" class="pa-toggle" aria-haspopup="menu" aria-expanded="false" aria-label="More page options" data-pa-toggle>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+  </button>
+  <div class="pa-menu" role="menu" hidden data-pa-menu>
+    <button type="button" role="menuitem" data-pa-copy>
+      <strong>Copy as Markdown</strong><span>For pasting into any LLM</span>
+    </button>
+    <a role="menuitem" href="index.md" target="_blank" rel="noopener">
+      <strong>View as Markdown</strong><span>Plain text of this page</span>
+    </a>
+    <a role="menuitem" href="#" target="_blank" rel="noopener" data-pa-open="https://chatgpt.com/?q=">
+      <strong>Open in ChatGPT</strong><span>Ask questions about this page</span>
+    </a>
+    <a role="menuitem" href="#" target="_blank" rel="noopener" data-pa-open="https://claude.ai/new?q=">
+      <strong>Open in Claude</strong><span>Ask questions about this page</span>
+    </a>
+  </div>
+  <span class="sr-only" role="status" aria-live="polite" data-pa-status></span>
+</div>

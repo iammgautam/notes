@@ -25,6 +25,7 @@ layout: base
     <nav class="crumbs" aria-label="Breadcrumb"><a href="{{ '/' | relative_url }}">Notes</a> <span aria-hidden="true">/</span> <a href="{{ '/' | append: page.section | append: '/' | relative_url }}">{{ s.title }}</a></nav>
     <header class="n-head">
       <h1 class="n-note-title">{{ page.title }}</h1>
+      {% include page-actions.html %}
       {% if page.summary %}<p class="lede">{{ page.summary }}</p>{% endif %}
     </header>
     <div class="prose">
