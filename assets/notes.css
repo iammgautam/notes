@@ -157,3 +157,31 @@
   color: var(--color-text-muted);
 }
 .n-toc-group + ol { margin-top: var(--sp-1); }
+
+/* ---------- Page actions (copy page / open in LLM) ---------- */
+.page-actions { position: relative; display: inline-flex; justify-self: start; margin-top: var(--sp-1); }
+.page-actions > button {
+  display: inline-flex; align-items: center; gap: var(--sp-2); min-height: 36px;
+  background: var(--color-surface); color: var(--color-text-strong);
+  border: 1px solid var(--color-border); font: 500 var(--fs-sm)/1 var(--font-sans); cursor: pointer;
+  transition: border-color var(--dur-fast), background-color var(--dur-fast);
+}
+.page-actions > button:hover { border-color: var(--color-text-muted); }
+.pa-copy { padding: 0 var(--sp-3); border-radius: var(--radius-pill) 0 0 var(--radius-pill); }
+.pa-toggle { padding: 0 var(--sp-2); border-left: 0 !important; border-radius: 0 var(--radius-pill) var(--radius-pill) 0; }
+.page-actions svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.pa-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; min-width: 260px;
+  display: grid; padding: var(--sp-1);
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.25);
+}
+.pa-menu[hidden] { display: none; }
+.pa-menu > * {
+  display: grid; gap: 2px; padding: var(--sp-2) var(--sp-3); text-align: left;
+  background: none; border: 0; border-radius: var(--radius-sm); cursor: pointer;
+  color: var(--color-text-strong); text-decoration: none; font: inherit;
+}
+.pa-menu > *:hover, .pa-menu > *:focus-visible { background: var(--color-surface-muted); outline: none; }
+.pa-menu strong { font-size: var(--fs-sm); font-weight: 500; }
+.pa-menu span { font-size: var(--fs-xs); color: var(--color-text-muted); }
