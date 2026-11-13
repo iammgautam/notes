@@ -21,9 +21,9 @@
   group: deep
   blurb: The language internals and ORM behaviour that matter in production.
 - id: llm
-  title: LLM, RAG & Agents
+  title: LLM Engineering
   group: deep
-  blurb: Retrieval, tool calling, agents, and how models are served.
+  blurb: From transformers and tokens to RAG, agents, evals, fine-tuning, serving and production.
 - id: networking
   title: Networking & APIs
   group: deep
