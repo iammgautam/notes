@@ -12,6 +12,10 @@
   title: High-Level Design
   group: core
   blurb: A repeatable framework, building blocks and classic system designs.
+- id: backend
+  title: Backend System Design
+  group: core
+  blurb: "150 roadmap topics: architecture, databases, APIs, caching, distributed systems, messaging, security, ops and 15 designs."
 - id: postgresql
   title: PostgreSQL & Databases
   group: deep
