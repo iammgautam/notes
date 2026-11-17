@@ -12,6 +12,10 @@
   title: High-Level Design
   group: core
   blurb: A repeatable framework, building blocks and classic system designs.
+- id: ai-stack
+  title: "Python AI Stack: FastAPI, LangChain, LangGraph, Pandas"
+  group: core
+  blurb: "A learning roadmap for Python AI engineer roles: APIs with FastAPI, data with Pandas, agents with LangChain and LangGraph."
 - id: backend
   title: Backend System Design
   group: core
